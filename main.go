@@ -10,8 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ghodss/yaml"
 	"github.com/google/go-github/github"
 	"golang.org/x/oauth2"
+	"io"
+	"path"
 )
 
 var (
@@ -19,6 +22,8 @@ var (
 	githubOrg   string
 	githubRepo  string
 	topLevelDir string
+	localRepo   string
+	depth       int
 )
 
 var now time.Time
@@ -33,6 +38,8 @@ func init() {
 	flag.StringVar(&githubOrg, "github-org", "kubernetes", "")
 	flag.StringVar(&githubRepo, "github-repo", "kubernetes", "")
 	flag.StringVar(&topLevelDir, "top-dir", "", "")
+	flag.StringVar(&localRepo, "local-repo", "", "")
+	flag.IntVar(&depth, "depth", 10, "")
 	flag.Parse()
 
 	now = time.Now()
@@ -50,11 +57,15 @@ func main() {
 	client := github.NewClient(tc)
 
 	// TODO: ignore list, e.g. "*generated*", "*proto*".
-	fetchOwners(client, topLevelDir)
+	fetchOwners(client, topLevelDir, 0)
 }
 
-func fetchOwners(client *github.Client, dir string) {
+func fetchOwners(client *github.Client, dir string, level int) {
 	//log.Println("Collecting owners for path:", dir)
+	if level > depth {
+		return
+	}
+
 	_, directoryContent, _, err := client.Repositories.GetContents(githubOrg, githubRepo, dir, &github.RepositoryContentGetOptions{})
 	if err != nil {
 		ExitError(err)
@@ -62,7 +73,7 @@ func fetchOwners(client *github.Client, dir string) {
 	fetchTopCommitters(client, dir, 3)
 	for _, c := range directoryContent {
 		if c.Type != nil && *c.Type == "dir" {
-			fetchOwners(client, *c.Path)
+			fetchOwners(client, *c.Path, level+1)
 		}
 	}
 }
@@ -111,12 +122,35 @@ func fetchTopCommitters(client *github.Client, dir string, limit int) {
 	for i := 0; i < limit && i < len(cr); i++ {
 		res = append(res, cr[i].ID)
 	}
+
 	fmt.Printf("path: %s, owners: %v\n", dir, res)
+	if len(res) > 0 {
+		writeOwnersFile(dir, res)
+	}
+}
+
+// This function can be used to write a check-labels config file.
+func writeOwnersFile(filePath string, assignees []string) error {
+	fp, err := os.Create(path.Join(localRepo, filePath, "OWNERS"))
+	if err != nil {
+		return err
+	}
+	defer fp.Close()
+	if err != nil {
+		return err
+	}
+	m := map[string][]string{"assignees" : assignees}
+	res, _ := yaml.Marshal(m)
+	io.WriteString(fp, fmt.Sprintf("%s\n", string(res)))
+	return nil
 }
 
 type committer struct {
 	ID          string
 	CommitCount int
+}
+
+type assignee struct {
 }
 
 type committerRank []*committer
