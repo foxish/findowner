@@ -4,14 +4,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"io"
 	"os"
+	"path"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/ghodss/yaml"
 	"github.com/google/go-github/github"
 	"golang.org/x/oauth2"
+	"io/ioutil"
 )
 
 var (
@@ -19,6 +22,8 @@ var (
 	githubOrg   string
 	githubRepo  string
 	topLevelDir string
+	localRepo   string
+	depth       int
 )
 
 var now time.Time
@@ -33,6 +38,8 @@ func init() {
 	flag.StringVar(&githubOrg, "github-org", "kubernetes", "")
 	flag.StringVar(&githubRepo, "github-repo", "kubernetes", "")
 	flag.StringVar(&topLevelDir, "top-dir", "", "")
+	flag.StringVar(&localRepo, "local-repo", "", "")
+	flag.IntVar(&depth, "depth", 10, "")
 	flag.Parse()
 
 	now = time.Now()
@@ -50,24 +57,35 @@ func main() {
 	client := github.NewClient(tc)
 
 	// TODO: ignore list, e.g. "*generated*", "*proto*".
-	fetchOwners(client, topLevelDir)
+	fetchOwners(client, topLevelDir, 0)
 }
 
-func fetchOwners(client *github.Client, dir string) {
+func fetchOwners(client *github.Client, dir string, level int) {
 	//log.Println("Collecting owners for path:", dir)
+	if level > depth {
+		return
+	}
+
 	_, directoryContent, _, err := client.Repositories.GetContents(githubOrg, githubRepo, dir, &github.RepositoryContentGetOptions{})
 	if err != nil {
 		ExitError(err)
 	}
-	fetchTopCommitters(client, dir, 3)
+	fetchTopCommitters(client, dir, 3, false)
 	for _, c := range directoryContent {
-		if c.Type != nil && *c.Type == "dir" {
-			fetchOwners(client, *c.Path)
+		if c.Type != nil {
+			if *c.Type == "file" {
+				if strings.Contains(*c.Name, "md") {
+					//fmt.Println(*c.Name)
+					fetchTopCommitters(client, *c.Path, 3, true)
+				}
+			} else if  *c.Type == "dir" {
+				fetchOwners(client, *c.Path, level+1)
+			}
 		}
 	}
 }
 
-func fetchTopCommitters(client *github.Client, dir string, limit int) {
+func fetchTopCommitters(client *github.Client, dir string, limit int, isFile bool) {
 	opt := &github.CommitsListOptions{
 		Path:  dir,
 		Since: now.AddDate(0, -6, 0),
@@ -83,14 +101,14 @@ func fetchTopCommitters(client *github.Client, dir string, limit int) {
 		}
 		for _, c := range commits {
 			if c.Commit.Message == nil {
-				log.Printf("Commit.Message is nil, unexpected commit: %v\n", c.Commit.String())
+				//log.Printf("Commit.Message is nil, unexpected commit: %v\n", c.Commit.String())
 				continue
 			}
 			if strings.HasPrefix(*c.Commit.Message, "Merge pull request") {
 				continue
 			}
 			if c.Author == nil || c.Author.Login == nil {
-				log.Printf("Author or Author.Login is nil, unexpected commit: %v\n", c.Commit.String())
+				//log.Printf("Author or Author.Login is nil, unexpected commit: %v\n", c.Commit.String())
 				continue
 			}
 			id := *c.Author.Login
@@ -109,14 +127,56 @@ func fetchTopCommitters(client *github.Client, dir string, limit int) {
 
 	res := []string{}
 	for i := 0; i < limit && i < len(cr); i++ {
-		res = append(res, cr[i].ID)
+		if cr[i].ID != "johndmulhausen" {
+			res = append(res, cr[i].ID)
+		}
 	}
+
 	fmt.Printf("path: %s, owners: %v\n", dir, res)
+	if len(res) > 0 {
+		if isFile {
+			// write to top section of MD.
+			mdPath := path.Join(localRepo, dir)
+			replaceTopSectionMd(mdPath, getYAML(res))
+		} else {
+			writeOwnersFile(dir, res)
+		}
+	}
+}
+
+func replaceTopSectionMd(filepath string, yamlString string) {
+	read, _ := ioutil.ReadFile(filepath)
+	newStr := fmt.Sprintf("---\n%s", yamlString)
+	newContents := strings.Replace(string(read), "---", newStr, 1)
+	ioutil.WriteFile(filepath, []byte(newContents), 0)
+}
+
+// This function can be used to write a check-labels config file.
+func writeOwnersFile(filePath string, assignees []string) error {
+	fp, err := os.Create(path.Join(localRepo, filePath, "OWNERS"))
+	if err != nil {
+		return err
+	}
+	defer fp.Close()
+	if err != nil {
+		return err
+	}
+	io.WriteString(fp, fmt.Sprintf("%s\n", string(getYAML(assignees))))
+	return nil
+}
+
+func getYAML(assignees []string) string {
+	m := map[string][]string{"assignees": assignees}
+	res, _ := yaml.Marshal(m)
+	return string(res)
 }
 
 type committer struct {
 	ID          string
 	CommitCount int
+}
+
+type assignee struct {
 }
 
 type committerRank []*committer
