@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/ghodss/yaml"
-	"github.com/golang/glog"
 	"github.com/google/go-github/github"
 	"golang.org/x/oauth2"
 	"io"
@@ -29,8 +28,8 @@ var (
 var now time.Time
 
 type commitWeight struct {
-	Rank  int
-	Lines int
+	Rank  float64
+	Lines float64
 }
 
 func ExitError(err error) {
@@ -92,11 +91,13 @@ func fetchTopCommitters(client *github.Client, dir string, limit int) {
 		},
 	}
 	rank := map[string]commitWeight{}
+	wt := 1.0
 	for {
 		commits, resp, err := client.Repositories.ListCommits(githubOrg, githubRepo, opt)
 		if err != nil {
 			ExitError(err)
 		}
+
 		for _, c := range commits {
 			if c.Commit.Message == nil {
 				//log.Printf("Commit.Message is nil, unexpected commit: %v\n", c.Commit.String())
@@ -110,22 +111,25 @@ func fetchTopCommitters(client *github.Client, dir string, limit int) {
 				continue
 			}
 			id := *c.Author.Login
-			rcommit, _, err := client.Repositories.GetCommit(*c.Author.Login, githubRepo, *c.SHA)
-			if err != nil {
-				glog.Infof("Error fetching commit %v: %v", *c.SHA, err)
-			}
 
-			addr := 0
-			if rcommit != nil && rcommit.Stats.Additions != nil {
-				addr = *rcommit.Stats.Additions
-			}
+			//rcommit, _, err := client.Repositories.GetCommit(*c.Author.Login, githubRepo, *c.SHA)
+			//if err != nil {
+			//	glog.Infof("Error fetching commit %v: %v", *c.SHA, err)
+			//}
+			//
+			//addr := 0
+			//if rcommit != nil && rcommit.Stats.Additions != nil {
+			//	addr = *rcommit.Stats.Additions
+			//}
 
 			if val, ok := rank[id]; ok {
-				rank[id] = commitWeight{Rank: val.Rank + 1, Lines: val.Lines + addr}
+				rank[id] = commitWeight{Rank: val.Rank + (1 * wt), Lines: 0}
 			} else {
-				rank[id] = commitWeight{Rank: 1, Lines: addr}
+				rank[id] = commitWeight{Rank: (1 * wt), Lines: 0}
 			}
+			wt += 0.001
 			//fmt.Printf("CommitWeight: %+v, %+v\n", id, rank[id])
+
 		}
 		if resp.NextPage == 0 {
 			break
@@ -167,8 +171,8 @@ func writeOwnersFile(filePath string, assignees []string) error {
 
 type committer struct {
 	ID          string
-	CommitCount int
-	LinesCount  int
+	CommitCount float64
+	LinesCount  float64
 }
 
 type assignee struct {
