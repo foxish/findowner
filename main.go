@@ -68,7 +68,7 @@ func init() {
 		"service": []string{"bprashanth"},
 		"endpo": []string{"bprashanth"},
 		"gc": []string{"mikedanese"},
-		"garbage": []string{""},
+		"garbage": []string{"mikedanese"},
 		"namesp": []string{"derekwaynecarr"},
 		"autosc": []string{"fgrzadkowski"},
 		"quota": []string{"derekwaynecarr"},
