@@ -4,13 +4,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/ghodss/yaml"
+	"github.com/golang/glog"
 	"github.com/google/go-github/github"
 	"golang.org/x/oauth2"
 	"io"
@@ -27,6 +27,11 @@ var (
 )
 
 var now time.Time
+
+type commitWeight struct {
+	Rank  int
+	Lines int
+}
 
 func ExitError(err error) {
 	fmt.Fprintln(os.Stderr, err)
@@ -80,13 +85,13 @@ func fetchOwners(client *github.Client, dir string, level int) {
 
 func fetchTopCommitters(client *github.Client, dir string, limit int) {
 	opt := &github.CommitsListOptions{
-		Path:  dir,
-		Since: now.AddDate(0, -6, 0),
+		Path: dir,
+		//Since: now.AddDate(0, -6, 0),
 		ListOptions: github.ListOptions{
 			PerPage: 200,
 		},
 	}
-	rank := map[string]int{}
+	rank := map[string]commitWeight{}
 	for {
 		commits, resp, err := client.Repositories.ListCommits(githubOrg, githubRepo, opt)
 		if err != nil {
@@ -94,18 +99,33 @@ func fetchTopCommitters(client *github.Client, dir string, limit int) {
 		}
 		for _, c := range commits {
 			if c.Commit.Message == nil {
-				log.Printf("Commit.Message is nil, unexpected commit: %v\n", c.Commit.String())
+				//log.Printf("Commit.Message is nil, unexpected commit: %v\n", c.Commit.String())
 				continue
 			}
 			if strings.HasPrefix(*c.Commit.Message, "Merge pull request") {
 				continue
 			}
 			if c.Author == nil || c.Author.Login == nil {
-				log.Printf("Author or Author.Login is nil, unexpected commit: %v\n", c.Commit.String())
+				//log.Printf("Author or Author.Login is nil, unexpected commit: %v\n", c.Commit.String())
 				continue
 			}
 			id := *c.Author.Login
-			rank[id] = rank[id] + 1
+			rcommit, _, err := client.Repositories.GetCommit(*c.Author.Login, githubRepo, *c.SHA)
+			if err != nil {
+				glog.Infof("Error fetching commit %v: %v", *c.SHA, err)
+			}
+
+			addr := 0
+			if rcommit != nil && rcommit.Stats.Additions != nil {
+				addr = *rcommit.Stats.Additions
+			}
+
+			if val, ok := rank[id]; ok {
+				rank[id] = commitWeight{Rank: val.Rank + 1, Lines: val.Lines + addr}
+			} else {
+				rank[id] = commitWeight{Rank: 1, Lines: addr}
+			}
+			//fmt.Printf("CommitWeight: %+v, %+v\n", id, rank[id])
 		}
 		if resp.NextPage == 0 {
 			break
@@ -114,7 +134,7 @@ func fetchTopCommitters(client *github.Client, dir string, limit int) {
 	}
 	cr := committerRank{}
 	for id, c := range rank {
-		cr = append(cr, &committer{ID: id, CommitCount: c})
+		cr = append(cr, &committer{ID: id, CommitCount: c.Rank, LinesCount: c.Lines})
 	}
 	sort.Sort(cr)
 
@@ -139,7 +159,7 @@ func writeOwnersFile(filePath string, assignees []string) error {
 	if err != nil {
 		return err
 	}
-	m := map[string][]string{"assignees" : assignees}
+	m := map[string][]string{"assignees": assignees}
 	res, _ := yaml.Marshal(m)
 	io.WriteString(fp, fmt.Sprintf("%s\n", string(res)))
 	return nil
@@ -148,6 +168,7 @@ func writeOwnersFile(filePath string, assignees []string) error {
 type committer struct {
 	ID          string
 	CommitCount int
+	LinesCount  int
 }
 
 type assignee struct {
@@ -158,7 +179,7 @@ type committerRank []*committer
 func (s committerRank) Len() int { return len(s) }
 
 func (s committerRank) Less(i, j int) bool {
-	return s[i].CommitCount > s[j].CommitCount
+	return (s[i].CommitCount > s[j].CommitCount) || (s[i].LinesCount > s[j].LinesCount)
 }
 
 func (s committerRank) Swap(i, j int) {
