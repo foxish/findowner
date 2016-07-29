@@ -163,6 +163,8 @@ func writeOwnersFile(filePath string, assignees []string) error {
 	if err != nil {
 		return err
 	}
+
+	sort.Strings(assignees)
 	m := map[string][]string{"assignees": assignees}
 	res, _ := yaml.Marshal(m)
 	io.WriteString(fp, fmt.Sprintf("%s\n", string(res)))
