@@ -24,6 +24,8 @@ var (
 	topLevelDir string
 	localRepo   string
 	depth       int
+
+	AuthList    map[string][]string
 )
 
 var now time.Time
@@ -43,6 +45,47 @@ func init() {
 	flag.Parse()
 
 	now = time.Now()
+
+	AuthList = map[string][]string {
+		"ui": []string{"bryk"},
+		"kubectl": []string{"bgrant0607"},
+		"chinese": []string{"hurf"},
+		"example": []string{"jeffmendoza"},
+		"admission": []string{"erictune", "derekwaynecarr", "davidopp"},
+		"api": []string{"bgrant0607"},
+		"machinery": []string{"lavalamp"},
+		"etcd": []string{"lavalamp"},
+		"node": []string{"dchen1107"},
+		"storage": []string{"saad-ali"},
+		"network": []string{"thockin"},
+		"sched": []string{"davidopp"},
+		"control": []string{"bprashanth"},
+		"replic": []string{"bprashanth"},
+		"job": []string{"erictune", "soltysh"},
+		"deploy": []string{"bgrant0607"},
+		"nodecontroller": []string{"davidopp", "gmarek"},
+		"pets": []string{"bprashanth"},
+		"service": []string{"bprashanth"},
+		"endpo": []string{"bprashanth"},
+		"gc": []string{"mikedanese"},
+		"garbage": []string{""},
+		"namesp": []string{"derekwaynecarr"},
+		"autosc": []string{"fgrzadkowski"},
+		"quota": []string{"derekwaynecarr"},
+		"account": []string{"liggitt"},
+		"route": []string{"cjcullen"},
+		"volu": []string{"jsafrane", "saad-ali"},
+		"dns": []string{"ArtfulCoder"},
+		"scala": []string{"wojtek-t"},
+		"releas": []string{"david-mcmahon"},
+		"ha": []string{"mikedanese"},
+		"auth": []string{"erictune"},
+		"security" : []string{"erictune"},
+		"mesos": []string{"jdef"},
+		"aws": []string{"justinsb"},
+		"openstack": []string{"xsgordon", "idvoretskyi"},
+	}
+
 }
 
 func main() {
@@ -85,17 +128,18 @@ func fetchOwners(client *github.Client, dir string, level int) {
 	}
 }
 
-func fetchTopCommitters(client *github.Client, dir string, limit int, isFile bool) {
+
+func getRepoHistory(client *github.Client, dir string, repo string, rank *map[string]float64, wt float64) {
+	rankP := *rank
 	opt := &github.CommitsListOptions{
 		Path:  dir,
-		Since: now.AddDate(0, -6, 0),
 		ListOptions: github.ListOptions{
 			PerPage: 200,
 		},
 	}
-	rank := map[string]int{}
 	for {
-		commits, resp, err := client.Repositories.ListCommits(githubOrg, githubRepo, opt)
+		commits, resp, err := client.Repositories.ListCommits(githubOrg, repo, opt)
+		fmt.Printf("%#v commits from %#v\n", len(commits), githubOrg + ":" + repo + ":" + dir)
 		if err != nil {
 			ExitError(err)
 		}
@@ -104,22 +148,57 @@ func fetchTopCommitters(client *github.Client, dir string, limit int, isFile boo
 				//log.Printf("Commit.Message is nil, unexpected commit: %v\n", c.Commit.String())
 				continue
 			}
+
+			// no merges
 			if strings.HasPrefix(*c.Commit.Message, "Merge pull request") {
 				continue
 			}
+
+			// ignore gendocs
+			if strings.Contains(*c.Commit.Message, "gendocs") {
+				continue
+			}
+
+			// remove moving-to..
+			if strings.Contains(*c.Commit.Message, "moving") {
+				continue
+			}
+
 			if c.Author == nil || c.Author.Login == nil {
 				//log.Printf("Author or Author.Login is nil, unexpected commit: %v\n", c.Commit.String())
 				continue
 			}
 			id := *c.Author.Login
-			rank[id] = rank[id] + 1
+			rankP[id] = rankP[id] + wt
+			wt += 0.001
 		}
 		if resp.NextPage == 0 {
 			break
 		}
 		opt.ListOptions.Page = resp.NextPage
 	}
+}
+
+func fetchTopCommitters(client *github.Client, dir string, limit int, isFile bool) {
+	rank := map[string]float64{}
+	getRepoHistory(client, dir, githubRepo, &rank, 1)
+
+	// if isFile, then Readme.md == Index.md
+	dir2 := strings.Replace(dir, "index.md", "README.md", 1)
+	getRepoHistory(client, dir2, "kubernetes", &rank, 1.5)
+
+	//dir3 := path.Dir(dir)
+	if !isFile {
+		dir3 := dir + ".md"
+		getRepoHistory(client, dir3, "kubernetes", &rank, 2)
+	}
+
+
+
+
+
 	cr := committerRank{}
+	uniqs := map[string]bool{}
 	for id, c := range rank {
 		cr = append(cr, &committer{ID: id, CommitCount: c})
 	}
@@ -127,10 +206,24 @@ func fetchTopCommitters(client *github.Client, dir string, limit int, isFile boo
 
 	res := []string{}
 	for i := 0; i < limit && i < len(cr); i++ {
+		// remove from list.
 		if cr[i].ID != "johndmulhausen" {
 			res = append(res, cr[i].ID)
+			uniqs[cr[i].ID] = true
 		}
 	}
+
+	// go over all for current path:
+	for k, v := range AuthList {
+		if strings.Contains(dir, k) {
+			for _, s := range v {
+				if _, ok := uniqs[s]; !ok {
+					res = append(res, s)
+				}
+			}
+		}
+	}
+	sort.Strings(res)
 
 	fmt.Printf("path: %s, owners: %v\n", dir, res)
 	if len(res) > 0 {
@@ -166,6 +259,7 @@ func writeOwnersFile(filePath string, assignees []string) error {
 }
 
 func getYAML(assignees []string) string {
+	sort.Strings(assignees)
 	m := map[string][]string{"assignees": assignees}
 	res, _ := yaml.Marshal(m)
 	return string(res)
@@ -173,7 +267,7 @@ func getYAML(assignees []string) string {
 
 type committer struct {
 	ID          string
-	CommitCount int
+	CommitCount float64
 }
 
 type assignee struct {
